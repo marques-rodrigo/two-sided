@@ -24,7 +24,7 @@ data InferState = InferState {count :: Int, constraints :: ConstraintSet}
 initInferState :: InferState
 initInferState = InferState {count = 0, constraints = []}
 
-inferR :: Env -> Term -> Infer Judgement
+inferR :: Env -> Term -> Infer Type
 inferR left term = do
     debug $ "Inferring on the right with " ++ show left ++ " for " ++ show term
     case term of
@@ -34,11 +34,11 @@ inferR left term = do
                 Nothing -> do
                     debug "Closed by VarK on the right"
                     constrain Ok b
-                    return Judgement{left = left, right = [(term, Mono b)]}
+                    return b
                 Just (Mono t) -> do
                     debug "Closed by Var  on the right"
                     constrain t b
-                    return Judgement{left = left, right = [(term, Mono b)]}
+                    return b
                 Just (Poly vars rels ty) -> do
                     debug "Closed by GVar  on the right"
                     bs <- sequence [freshVar | _ <- vars]
@@ -47,14 +47,14 @@ inferR left term = do
                         instRels = applyMany subs rels
                     constrain instType b
                     modify (\s -> s{constraints = instRels ++ constraints s}) -- fixme
-                    return Judgement{left = left, right = [(term, Mono b)]}
+                    return b
         App m n -> do
             debug "Proceeding by AppR"
             a <- freshVar
-            Judgement{right = [(_, Mono b)]} <- inferR left m
-            Judgement{right = [(_, Mono c)]} <- inferR left n
+            b <- inferR left m
+            c <- inferR left n
             constrain b (SufArrow c a)
-            return $ Judgement{left = left, right = [(term, Mono a)]}
+            return a
         Abs f x body -> inferNecessity <|> inferSufficiency
           where
             inferSufficiency = do
@@ -65,10 +65,9 @@ inferR left term = do
                         (Var "x", Mono t) : case f of
                             "" -> left
                             _ -> (Var f, Mono a) : left
-                Judgement{right = right'} <- inferR left' body
-                let Mono b = fromJust $ lookup body right'
+                b <- inferR left' body
                 constrain (SufArrow t b) a
-                return Judgement{left = left, right = [(term, Mono a)]}
+                return a
             inferNecessity = do
                 debug $ "Proceeding by AbnR"
                 a <- freshVar
@@ -76,35 +75,33 @@ inferR left term = do
                 let left' = case f of
                         "" -> left
                         _ -> (Var f, Mono a) : left
-                Judgement{left = left'} <- inferL left' body [(Var "x", Mono t)]
-                let Mono b = fromJust $ lookup body left'
+                b <- inferL left' body [(Var "x", Mono t)]
                 constrain (NecArrow t b) a
-                return Judgement{left = left, right = [(term, Mono a)]}
+                return a
         Data name fields -> do
             debug $ "Proceeding by CnsR"
             a <- freshVar
-            fieldJudgements <- mapM (inferR left) fields
-            let fieldTypes = map (toType . snd . head . right) fieldJudgements
+            fieldTypes <- mapM (inferR left) fields
             constrain (DataType name fieldTypes) a
-            return Judgement{left = left, right = [(term, Mono a)]}
+            return a
         Match m matches -> do
             debug $ "Proceeding by MchR"
             a <- freshVar
-            Judgement{right = [(_, Mono b)]} <- inferR left m
+            b <- inferR left m
             mapM_ (inferRMatching left a b) matches
-            return Judgement{left = left, right = [(term, Mono a)]}
+            return a
           where
             inferRMatching left resType mType ((name, vars), term) = do
                 bs <- sequence [freshVar | _ <- vars]
                 let left' = zipWith (\x v -> (Var x, Mono v)) vars bs ++ left
-                Judgement{right = [(_, Mono t)]} <- inferR left' term
+                t <- inferR left' term
                 let patternType = DataType name (map TypeVar vars)
                     subs = mkSubsts vars bs
                     patternType' = applyMany subs patternType
                 constrain t resType
                 constrain mType patternType'
 
-inferL :: Env -> Term -> Env -> Infer Judgement
+inferL :: Env -> Term -> Env -> Infer Type
 inferL left term right = do
     debug $ "Inferring on the left with " ++ show left ++ " for " ++ show term ++ " with " ++ show right
     case right of
@@ -112,11 +109,11 @@ inferL left term right = do
             debug $ "Closed by VarK on the left"
             a <- freshVar
             constrain Ok (toType b)
-            return Judgement{left = (term, Mono a) : left, right = right}
+            return a
         _ -> fail ""
     <|> inferL' left term right
 
-inferL' :: Env -> Term -> Env -> Infer Judgement
+inferL' :: Env -> Term -> Env -> Infer Type
 inferL' left term right = case term of
     Var x -> do
         case lookup term right of
@@ -125,30 +122,27 @@ inferL' left term right = case term of
                 debug $ "Closed by Var2 on the left"
                 a <- freshVar
                 constrain a (toType b)
-                return Judgement{left = (term, Mono a) : left, right = right}
+                return a
     App m n -> infer1 <|> infer2
       where
         infer1 = do
             debug $ "Proceeding by AppL"
             a <- freshVar
-            Judgement{right = right'} <- inferR left m
-            let (Mono b) = fromJust $ lookup m right'
-            Judgement{left = left'} <- inferL left n right
-            let (Mono c) = fromJust $ lookup n left'
+            b <- inferR left m
+            c <- inferL left n right
             constrain b (NecArrow c a)
-            return Judgement{left = (term, Mono a) : left, right = right}
+            return a
         infer2 = do
             debug $ "Proceeding by FunK on the left"
             a <- freshVar
-            Judgement{left = left'} <- inferL left m right
-            let Mono b = fromJust $ lookup m left'
+            b <- inferL left m right
             constrain Ok (NecArrow a b)
-            return Judgement{left = (term, Mono a) : left, right = right}
+            return a
     Abs _ x m -> do
         debug $ "Closed by AbsDL on the left"
         a <- freshVar
         constrain a (DataType "DATA" []) -- express every data type in the language with this simple trick
-        return Judgement{left = (term, Mono a) : left, right = right}
+        return a
     Data name fields -> infer1 <|> infer2 <|> infer3 <|> infer4 <|> infer5
       where
         infer1 = do
@@ -157,37 +151,37 @@ inferL' left term right = case term of
             constrain a (DataType ("DATA\\" ++ name) [])
             field <- lift fields
             -- fieldJudgements <- mapM (\field -> inferL left field right) fields
-            Judgement{left = (field, fieldType) : _} <- inferL left field right
+            fieldType <- inferL left field right
             firstPart <- sequence [freshVar | _ <- takeWhile (/= field) fields]
             secondPart <- sequence [freshVar | _ <- [length firstPart + 1 .. length fields]]
-            constrain a (DataType name (firstPart ++ toType fieldType : secondPart))
-            return Judgement{left = (term, Mono a) : left, right = right}
+            constrain a (DataType name (firstPart ++ fieldType : secondPart))
+            return a
         infer2 = do
             debug $ "Proceeding by CnsK on the left"
             a <- freshVar
             field <- lift fields
-            Judgement{left = (field, fieldType) : _} <- inferL left field right
-            constrain Ok (toType fieldType)
-            return Judgement{left = (term, Mono a) : left, right = right}
+            fieldType <- inferL left field right
+            constrain Ok fieldType
+            return a
         infer3 = do
             debug $ "Closed by CnsDL1 on the left"
             a <- freshVar
             b <- freshVar
             c <- freshVar
             constrain a (SufArrow b c)
-            return Judgement{left = (term, Mono a) : left, right = right}
+            return a
         infer4 = do
             debug $ "Closed by CnsDL2 on the left"
             a <- freshVar
             b <- freshVar
             c <- freshVar
             constrain a (NecArrow b c)
-            return Judgement{left = (term, Mono a) : left, right = right}
+            return a
         infer5 = do
             debug $ "Closed by CnsDL3 on the left"
             a <- freshVar
             constrain a (DataType ("DATA\\" ++ name) [])
-            return Judgement{left = (term, Mono a) : left, right = right}
+            return a
     Match m matches -> do
         debug "Proceeding by MchL"
         a <- freshVar
@@ -196,8 +190,7 @@ inferL' left term right = case term of
             bs <- sequence [freshVar | _ <- vars]
             let bMap = zip vars bs
                 pair = Data "(,)" [m, body]
-            Judgement{left = left'} <- inferL left pair right
-            let (Mono ai') = fromJust $ lookup pair left'
+            ai' <- inferL left pair right
             constrain a ai
             constrain (DataType "(,)" [ai, bi]) ai'
             let subs = mkSubsts vars bs
@@ -205,10 +198,9 @@ inferL' left term right = case term of
             constrain inst bi
             forM_ vars (\x -> do
                 bix <- freshVar
-                Judgement{left = left'} <- inferL left body [(Var x, Mono (fromJust $ lookup x bMap))]
-                let (Mono aix) = fromJust $ lookup body left'
+                aix <- inferL left body [(Var x, Mono (fromJust $ lookup x bMap))]
                 constrain a aix))
-        return Judgement{left = (term, Mono a) : left, right = right}
+        return a
 
 constrain :: Type -> Type -> Infer ()
 constrain a b = modify (\s -> s{constraints = (a, b) : constraints s})
@@ -234,12 +226,12 @@ infer left term right = do
 inferRight :: Env -> Term -> IO ()
 inferRight left term = do
     let j = runStateT (inferR left term) initInferState
-    mapM_ (\(a, b) -> print a >> print b) j
+    mapM_ (\(a, b) -> print Judgement{left, right=[(term, Mono a)]} >> print b) j
 
 inferLeft :: Env -> Term -> Env -> IO ()
 inferLeft left term right = do
     let j = runStateT (inferL left term right) initInferState
-    mapM_ (\(a, b) -> print a >> print b) j
+    mapM_ (\(a, b) -> print Judgement{left=left ++ [(term, Mono a)], right} >> print b) j
 
 testVar :: IO ()
 
