@@ -10,12 +10,11 @@ import Data.Maybe
 import Debug.Trace (traceM)
 import Types
 import Prelude hiding (succ)
+import Data.Bifunctor
 
 verbose :: Bool
 verbose = False
 
-debug :: Applicative f => String -> f ()
-debug = when verbose . traceM
 
 type Infer a = StateT InferState [] a
 data InferState = InferState {count :: Int, constraints :: ConstraintSet}
@@ -26,87 +25,68 @@ initInferState = InferState {count = 0, constraints = []}
 
 inferR :: Env -> Term -> Infer Type
 inferR left term = do
-    debug $ "Inferring on the right with " ++ show left ++ " for " ++ show term
     case term of
         Var x -> do
             b <- freshVar
             case lookup term left of
                 Nothing -> do
-                    debug "Closed by VarK on the right"
                     constrain Ok b
                     return b
                 Just (Mono t) -> do
-                    debug "Closed by Var  on the right"
                     constrain t b
                     return b
-                Just (Poly vars rels ty) -> do
-                    debug "Closed by GVar  on the right"
+                Just (Poly vars rels t) -> do
                     bs <- sequence [freshVar | _ <- vars]
                     let subs = mkSubsts vars bs
-                        instType = applyMany subs ty
+                        instType = applyMany subs t
                         instRels = applyMany subs rels
                     constrain instType b
-                    modify (\s -> s{constraints = instRels ++ constraints s}) -- fixme
+                    mapM_ (uncurry constrain) instRels
                     return b
         App m n -> do
-            debug "Proceeding by AppR"
-            a <- freshVar
-            b <- inferR left m
-            c <- inferR left n
-            constrain b (SufArrow c a)
-            return a
+            res <- freshVar
+            fun <- inferR left m
+            arg <- inferR left n
+            constrain fun (SufArrow arg res)
+            return res
         Abs f x body -> inferNecessity <|> inferSufficiency
           where
             inferSufficiency = do
-                debug $ "Proceeding by AbsR"
-                a <- freshVar
-                t <- freshVar
-                let left' =
-                        (Var "x", Mono t) : case f of
-                            "" -> left
-                            _ -> (Var f, Mono a) : left
-                b <- inferR left' body
-                constrain (SufArrow t b) a
-                return a
+                fun <- freshVar
+                arg <- freshVar
+                let left = (Var "x", Mono arg) : if f /= "" then (Var f, Mono fun) : left else left
+                res <- inferR left body
+                constrain (SufArrow arg res) fun
+                return fun
             inferNecessity = do
-                debug $ "Proceeding by AbnR"
-                a <- freshVar
-                t <- freshVar
-                let left' = case f of
-                        "" -> left
-                        _ -> (Var f, Mono a) : left
-                b <- inferL left' body [(Var "x", Mono t)]
-                constrain (NecArrow t b) a
-                return a
+                fun <- freshVar
+                arg <- freshVar
+                let left = (Var "x", Mono arg) : if f /= "" then (Var f, Mono fun) : left else left
+                res <- inferL left body [(Var "x", Mono arg)]
+                constrain (NecArrow arg res) fun
+                return fun
         Data name fields -> do
-            debug $ "Proceeding by CnsR"
             a <- freshVar
             fieldTypes <- mapM (inferR left) fields
             constrain (DataType name fieldTypes) a
             return a
         Match m matches -> do
-            debug $ "Proceeding by MchR"
-            a <- freshVar
-            b <- inferR left m
-            mapM_ (inferRMatching left a b) matches
-            return a
-          where
-            inferRMatching left resType mType ((name, vars), term) = do
+            res <- freshVar
+            matchedType <- inferR left m
+            forM_ matches (\((name, vars), body) -> do
                 bs <- sequence [freshVar | _ <- vars]
-                let left' = zipWith (\x v -> (Var x, Mono v)) vars bs ++ left
-                t <- inferR left' term
-                let patternType = DataType name (map TypeVar vars)
-                    subs = mkSubsts vars bs
-                    patternType' = applyMany subs patternType
-                constrain t resType
-                constrain mType patternType'
+                let subs = zip vars bs
+                    typs = map (bimap Var Mono) subs
+                bodyType <- inferR (typs ++ left) body
+                let patternType = apply subs (DataType name (map TypeVar vars))
+                constrain bodyType res
+                constrain matchedType patternType)
+            return res
 
 inferL :: Env -> Term -> Env -> Infer Type
 inferL left term right = do
-    debug $ "Inferring on the left with " ++ show left ++ " for " ++ show term ++ " with " ++ show right
     case right of
         [(Var x, b)] -> do
-            debug $ "Closed by VarK on the left"
             a <- freshVar
             constrain Ok (toType b)
             return a
@@ -119,88 +99,78 @@ inferL' left term right = case term of
         case lookup term right of
             Nothing -> fail "Lookup fail on the right"
             Just b -> do
-                debug $ "Closed by Var2 on the left"
                 a <- freshVar
                 constrain a (toType b)
                 return a
     App m n -> infer1 <|> infer2
       where
         infer1 = do
-            debug $ "Proceeding by AppL"
-            a <- freshVar
-            b <- inferR left m
-            c <- inferL left n right
-            constrain b (NecArrow c a)
-            return a
+            res <- freshVar
+            fun <- inferR left m
+            arg <- inferL left n right
+            constrain fun (NecArrow arg res)
+            return res
         infer2 = do
-            debug $ "Proceeding by FunK on the left"
-            a <- freshVar
-            b <- inferL left m right
-            constrain Ok (NecArrow a b)
-            return a
+            res <- freshVar
+            fun <- inferL left m right
+            constrain (NecArrow Ok res) fun
+            return res
     Abs _ x m -> do
-        debug $ "Closed by AbsDL on the left"
         a <- freshVar
-        constrain a (DataType "DATA" []) -- express every data type in the language with this simple trick
+        constrain a (DataType "DATATYPE" []) 
         return a
     Data name fields -> infer1 <|> infer2 <|> infer3 <|> infer4 <|> infer5
       where
         infer1 = do
-            debug $ "Proceeding by CnsL"
             a <- freshVar
-            constrain a (DataType ("DATA\\" ++ name) [])
-            field <- lift fields
-            -- fieldJudgements <- mapM (\field -> inferL left field right) fields
-            fieldType <- inferL left field right
-            firstPart <- sequence [freshVar | _ <- takeWhile (/= field) fields]
-            secondPart <- sequence [freshVar | _ <- [length firstPart + 1 .. length fields]]
-            constrain a (DataType name (firstPart ++ fieldType : secondPart))
+            forM_ fields (\field -> do
+                fieldType <- inferL left field right
+                firstPart <- sequence [freshVar | _ <- takeWhile (/= field) fields]
+                secondPart <- sequence [freshVar | _ <- [length firstPart + 1 .. length fields]]
+                constrain a (DataType name (firstPart ++ fieldType : secondPart)))
             return a
         infer2 = do
-            debug $ "Proceeding by CnsK on the left"
             a <- freshVar
-            field <- lift fields
-            fieldType <- inferL left field right
-            constrain Ok fieldType
+            forM_ fields (\field -> do
+                fieldType <- inferL left field right
+                constrain Ok fieldType)
             return a
         infer3 = do
-            debug $ "Closed by CnsDL1 on the left"
-            a <- freshVar
-            b <- freshVar
-            c <- freshVar
-            constrain a (SufArrow b c)
-            return a
+            fun <- freshVar
+            arg <- freshVar
+            res <- freshVar
+            constrain fun (SufArrow arg res)
+            return fun
         infer4 = do
-            debug $ "Closed by CnsDL2 on the left"
-            a <- freshVar
-            b <- freshVar
-            c <- freshVar
-            constrain a (NecArrow b c)
-            return a
+            fun <- freshVar
+            arg <- freshVar
+            res <- freshVar
+            constrain fun (NecArrow arg res)
+            return fun
         infer5 = do
-            debug $ "Closed by CnsDL3 on the left"
             a <- freshVar
             constrain a (DataType ("DATA\\" ++ name) [])
             return a
     Match m matches -> do
-        debug "Proceeding by MchL"
-        a <- freshVar
-        forM_ matches (\(pi@(name, vars), body) -> do
-            (ai, bi) <- liftM2 (,) freshVar freshVar
+        res <- freshVar
+        forM_ matches (\((name, vars), body) -> do
+            mTypeVar    <- freshVar
+            bodyTypeVar <- freshVar
             bs <- sequence [freshVar | _ <- vars]
-            let bMap = zip vars bs
-                pair = Data "(,)" [m, body]
-            ai' <- inferL left pair right
-            constrain a ai
-            constrain (DataType "(,)" [ai, bi]) ai'
-            let subs = mkSubsts vars bs
-                inst = applyMany subs (DataType name (map TypeVar vars))
-            constrain inst bi
-            forM_ vars (\x -> do
-                bix <- freshVar
-                aix <- inferL left body [(Var x, Mono (fromJust $ lookup x bMap))]
-                constrain a aix))
-        return a
+            let subs = zip vars bs
+                patternType = apply subs (promoteCons name vars)
+            DataType "" [mType, bodyType] <- inferL left (Data "" [m, body]) right
+            constrain res bodyType
+            constrain bodyTypeVar bodyType
+            constrain mTypeVar mType
+            constrain patternType mTypeVar
+            forM_ subs (\(x,b) -> do
+                bodyType <- inferL left body [(Var x, Mono b)]
+                constrain res bodyType))
+        return res
+
+promoteCons :: Constructor -> [TypeVar] -> Type
+promoteCons name vars = DataType name (map TypeVar vars)
 
 constrain :: Type -> Type -> Infer ()
 constrain a b = modify (\s -> s{constraints = (a, b) : constraints s})
@@ -254,6 +224,12 @@ testAbs = infer [] (Abs "id" "x" (Var "x")) []
 
 example :: IO ()
 example = inferRight [(Var "f", Poly [] [] $ NecArrow (DataType "[]" []) Ok)] (Abs "" "x" (App (Var "f") (Var "x")))
+
+testK1 :: IO ()
+testK1 = inferRight [] (Abs "" "x" (Abs "" "y" (Var "x")))
+
+testK2 :: IO ()
+testK2 = inferRight [] (Abs "" "x" (Abs "" "y" (Var "y")))
 
 instance Show InferState where
     show :: InferState -> String

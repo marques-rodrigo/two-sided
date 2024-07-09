@@ -158,8 +158,8 @@ instance Show Type where
     show (TypeVar uid) = "'" ++ varNames !! read uid
     show (DataType c []) = c
     show (DataType c fields) = c ++ "(" ++ show fields ++ ")"
-    show (SufArrow a b) = show a ++ " → " ++ show b
-    show (NecArrow a b) = show a ++ " ⤚ " ++ show b
+    show (SufArrow a b) = "(" ++ show a ++ " → " ++ show b ++ show ")"
+    show (NecArrow a b) = "(" ++ show a ++ " ⤚ " ++ show b ++ show ")"
 
 varNames :: [String]
 varNames = [1..] >>= flip replicateM ['a' .. 'z']
@@ -174,5 +174,5 @@ instance Show Term where
     show (Var x) = x
     show (Data c fields) = c ++ "(" ++ show fields ++ ")"
     show (App m n) = "(" ++ show m ++ " " ++ show n ++ ")"
-    show (Abs f x m) = f ++ "(" ++ x ++ ")" ++ "{" ++ show m ++ "}"
+    show (Abs f x m) = f ++ "(\\" ++ x ++ ". " ++ show m ++ ")"
     show (Match m pats) = "match " ++ show m ++ " with " ++ show pats
