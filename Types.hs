@@ -174,5 +174,5 @@ instance Show Term where
     show (Var x) = x
     show (Data c fields) = c ++ "(" ++ show fields ++ ")"
     show (App m n) = "(" ++ show m ++ " " ++ show n ++ ")"
-    show (Abs f x m) = f ++ "(" ++ x ++ ")" ++ "{" ++ show m ++ "}"
+    show (Abs f x m) = f ++ "(\\" ++ x ++ ". " ++ show m ++ ")"
     show (Match m pats) = "match " ++ show m ++ " with " ++ show pats

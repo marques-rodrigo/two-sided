@@ -12,7 +12,7 @@ import Types
 import Prelude hiding (succ)
 
 verbose :: Bool
-verbose = False
+verbose = True
 
 debug :: Applicative f => String -> f ()
 debug = when verbose . traceM
@@ -26,7 +26,7 @@ initInferState = InferState {count = 0, constraints = []}
 
 inferR :: Env -> Term -> Infer Judgement
 inferR left term = do
-    debug $ "Inferring on the right with " ++ show left ++ " for " ++ show term
+    debug $ "Inferring on the right with {" ++ show left ++ "} for " ++ show term
     case term of
         Var x -> do
             b <- freshVar
@@ -106,7 +106,7 @@ inferR left term = do
 
 inferL :: Env -> Term -> Env -> Infer Judgement
 inferL left term right = do
-    debug $ "Inferring on the left with " ++ show left ++ " for " ++ show term ++ " with " ++ show right
+    debug $ "Inferring on the left with {" ++ show left ++ "} for " ++ show term ++ " with {" ++ show right ++ "}"
     case right of
         [(Var x, b)] -> do
             debug $ "Closed by VarK on the left"
@@ -142,7 +142,7 @@ inferL' left term right = case term of
             a <- freshVar
             Judgement{left = left'} <- inferL left m right
             let Mono b = fromJust $ lookup m left'
-            constrain Ok (NecArrow a b)
+            constrain (NecArrow Ok a) b
             return Judgement{left = (term, Mono a) : left, right = right}
     Abs _ x m -> do
         debug $ "Closed by AbsDL on the left"
@@ -262,6 +262,12 @@ testAbs = infer [] (Abs "id" "x" (Var "x")) []
 
 example :: IO ()
 example = inferRight [(Var "f", Poly [] [] $ NecArrow (DataType "[]" []) Ok)] (Abs "" "x" (App (Var "f") (Var "x")))
+
+testK1 :: IO ()
+testK1 = inferRight [] (Abs "" "x" (Abs "" "y" (Var "x")))
+
+testK2 :: IO ()
+testK2 = inferRight [] (Abs "" "x" (Abs "" "y" (Var "y")))
 
 instance Show InferState where
     show :: InferState -> String
