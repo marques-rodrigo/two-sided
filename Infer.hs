@@ -54,15 +54,15 @@ inferR left term = do
             inferSufficiency = do
                 fun <- freshVar
                 arg <- freshVar
-                let left = (Var "x", Mono arg) : if f /= "" then (Var f, Mono fun) : left else left
+                let left = (Var x, Mono arg) : if f /= "" then (Var f, Mono fun) : left else left
                 res <- inferR left body
                 constrain (SufArrow arg res) fun
                 return fun
             inferNecessity = do
                 fun <- freshVar
                 arg <- freshVar
-                let left = (Var "x", Mono arg) : if f /= "" then (Var f, Mono fun) : left else left
-                res <- inferL left body [(Var "x", Mono arg)]
+                let left = (Var x, Mono arg) : if f /= "" then (Var f, Mono fun) : left else left
+                res <- inferL left body [(Var x, Mono arg)]
                 constrain (NecArrow arg res) fun
                 return fun
         Data name fields -> do
