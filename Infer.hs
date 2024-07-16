@@ -62,7 +62,7 @@ inferR left term = do
                 a <- freshVar
                 t <- freshVar
                 let left' =
-                        (Var "x", Mono t) : case f of
+                        (Var x, Mono t) : case f of
                             "" -> left
                             _ -> (Var f, Mono a) : left
                 Judgement{right = right'} <- inferR left' body
@@ -76,7 +76,7 @@ inferR left term = do
                 let left' = case f of
                         "" -> left
                         _ -> (Var f, Mono a) : left
-                Judgement{left = left'} <- inferL left' body [(Var "x", Mono t)]
+                Judgement{left = left'} <- inferL left' body [(Var x, Mono t)]
                 let Mono b = fromJust $ lookup body left'
                 constrain (NecArrow t b) a
                 return Judgement{left = left, right = [(term, Mono a)]}
